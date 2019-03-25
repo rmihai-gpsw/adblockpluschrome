@@ -1,3 +1,4 @@
+/* eslint-disable brace-style,max-len */
 /*
  * This file is part of Adblock Plus <https://adblockplus.org/>,
  * Copyright (C) 2006-present eyeo GmbH
@@ -22,6 +23,20 @@ const TEST_PAGES_URL = "https://testpages.adblockplus.org/en/";
 const assert = require("assert");
 const Jimp = require("jimp");
 const {By, until} = require("selenium-webdriver");
+const filterScript = `
+              let filters = arguments[0];
+              let callback = arguments[arguments.length - 1];
+              browser.runtime.sendMessage({type: "subscriptions.get",
+                                           downloadable: true,
+                                           special: true}).then(subs =>
+              {
+                for (let subscription of subs)
+                  browser.runtime.sendMessage({type: "subscriptions.remove",
+                                               url: subscription.url});
+                return browser.runtime.sendMessage({type: "filters.importRaw",
+                                                    text: filters});
+              }).then(() => callback(), callback);
+            `;
 
 let lastScreenshot = Promise.resolve();
 
@@ -90,13 +105,59 @@ function getSections(driver)
   ));
 }
 
+async function assertItemsInFrame({selectors, numberOfItems, driver, displayed}) {
+  let elements = await driver.findElements(By.css(selectors));
+  assert.ok(elements.length == numberOfItems, `number of elements found in page does not match expected when using selector '${selectors}'`);
+  await Promise.all(elements.map(async(element) => {
+    let untilCheck = function(elementToCheck){
+      if (displayed){
+        return until.elementIsVisible(elementToCheck);
+      }
+      return until.elementIsNotVisible(elementToCheck);
+    };
+    await driver.wait(untilCheck(element), 1000, `elements in page do not match the expected display state of '${displayed}' when using ${selectors}`);
+  }));
+}
+
+async function assertItemsInPage({selectors, numberOfItems, driver, displayed, numberOfIframes = 0}) {
+  await assertItemsInFrame({selectors, numberOfItems, driver, displayed});
+  let iframes = await driver.findElements(By.css("iframe"));
+  assert.ok(iframes.length == numberOfIframes);
+  await Promise.all(iframes.map(async(iframe) => {
+    await driver.switchTo().frame(iframes.indexOf(iframe));
+    await assertItemsInFrame({selectors, numberOfItems, driver, displayed});
+  }));
+  await driver.switchTo().defaultContent();
+}
+
+
+[{url: "exceptions/genericblock", blockedSelectors: ".blocked", numberOfBlockedItems: 1, allowedSelectors: "*[src*='target-generic']", numberOfAllowedItems: 1, numberOfIframes: 1, title: '$genericblock Exception'},
+  {url: "exceptions/generichide", blockedSelectors: ".blocked", numberOfBlockedItems: 1, allowedSelectors: ".target-green", numberOfAllowedItems: 1, numberOfIframes: 1, title: '$generichide Exception'}].forEach((item) => {
+    it(`generic exceptions test for ${item.url}`, async function() {
+      await this.driver.navigate().to(`${TEST_PAGES_URL}${item.url}`);
+      await this.driver.wait(until.titleIs(`${item.title} - ABP Test Pages`), 1000);
+      await assertItemsInPage({selectors: item.allowedSelectors, numberOfItems: item.numberOfAllowedItems, driver: this.driver, displayed: true, numberOfIframes: item.numberOfIframes});
+      await assertItemsInPage({selectors: item.blockedSelectors, numberOfItems: item.numberOfBlockedItems, driver: this.driver, displayed: true, numberOfIframes: item.numberOfIframes});
+      let filterElements = await this.driver.findElements(By.css("pre"));
+      let filters = await Promise.all(filterElements.map(async(element) => {
+        return await element.getAttribute("textContent");
+      }));
+      await this.driver.navigate().to(this.origin + "/options.html");
+      await this.driver.executeAsyncScript(filterScript, filters.join("\n"));
+      await this.driver.navigate().to(`${TEST_PAGES_URL}${item.url}`);
+      await assertItemsInPage({selectors: item.allowedSelectors, numberOfItems: item.numberOfAllowedItems, driver: this.driver, displayed: true, numberOfIframes: item.numberOfIframes});
+      await assertItemsInPage({selectors: item.blockedSelectors, numberOfItems: item.numberOfBlockedItems, driver: this.driver, displayed: false, numberOfIframes: item.numberOfIframes});
+    });
+  });
+
+
 it("test pages", function()
 {
   return this.driver.navigate().to(TEST_PAGES_URL).then(() =>
-    this.driver.findElements(By.css(".site-pagelist a"))
+      this.driver.findElements(By.css(".site-pagelist a"))
   ).then(elements =>
-    Promise.all(elements.map(elem => Promise.all([elem.getAttribute("href"),
-                                                  elem.getText()])))
+      Promise.all(elements.map(elem => Promise.all([elem.getAttribute("href"),
+        elem.getText()])))
   ).then(urls =>
   {
     let p1 = Promise.resolve();
@@ -112,15 +173,15 @@ it("test pages", function()
           // in dynamically written documents.
           this.test.parent.title == "Chromium (oldest)" &&
           (pageTitle == "Inline style !important" ||
-           pageTitle == "Anonymous iframe document.write()"))
+              pageTitle == "Anonymous iframe document.write()"))
         continue;
 
       p1 = p1.then(() =>
-        this.driver.navigate().to(url)
+          this.driver.navigate().to(url)
       ).then(() =>
-        Promise.all([
-          getSections(this.driver),
-          this.driver.executeScript(`
+          Promise.all([
+            getSections(this.driver),
+            this.driver.executeScript(`
             let documents = [document];
             while (documents.length > 0)
             {
@@ -136,17 +197,17 @@ it("test pages", function()
               }
             }
           `)
-        ])
-      ).then(([sections]) =>
-        Promise.all(sections.map(([title, demo, filters]) =>
-          Promise.all([
-            title.getAttribute("textContent").then(testTitle =>
-              `${pageTitle.trim()} - ${testTitle.trim()}`
-            ),
-            takeScreenshot(demo),
-            Promise.all(filters.map(elem => elem.getAttribute("textContent")))
           ])
-        ))
+      ).then(([sections]) =>
+          Promise.all(sections.map(([title, demo, filters]) =>
+              Promise.all([
+                title.getAttribute("textContent").then(testTitle =>
+                    `${pageTitle.trim()} - ${testTitle.trim()}`
+                ),
+                takeScreenshot(demo),
+                Promise.all(filters.map(elem => elem.getAttribute("textContent")))
+              ])
+          ))
       ).then(testCases =>
       {
         let p2 = Promise.resolve();
@@ -155,22 +216,9 @@ it("test pages", function()
           let [title, expectedScreenshot, filters] = testCases[i];
 
           p2 = p2.then(() =>
-            this.driver.navigate().to(this.origin + "/options.html")
+              this.driver.navigate().to(this.origin + "/options.html")
           ).then(() =>
-            this.driver.executeAsyncScript(`
-              let filters = arguments[0];
-              let callback = arguments[arguments.length - 1];
-              browser.runtime.sendMessage({type: "subscriptions.get",
-                                           downloadable: true,
-                                           special: true}).then(subs =>
-              {
-                for (let subscription of subs)
-                  browser.runtime.sendMessage({type: "subscriptions.remove",
-                                               url: subscription.url});
-                return browser.runtime.sendMessage({type: "filters.importRaw",
-                                                    text: filters});
-              }).then(() => callback(), callback);
-            `, filters.join("\n"))
+              this.driver.executeAsyncScript(filterScript, filters.join("\n"))
           ).then(error =>
           {
             if (error)
@@ -181,11 +229,11 @@ it("test pages", function()
             if (pageTitle.startsWith("$popup"))
             {
               return getSections(this.driver).then(sections =>
-                sections[i][1].findElement(By.css("a[href],button")).click()
+                  sections[i][1].findElement(By.css("a[href],button")).click()
               ).then(() =>
-                this.driver.sleep(100)
+                  this.driver.sleep(100)
               ).then(() =>
-                this.driver.getAllWindowHandles()
+                  this.driver.getAllWindowHandles()
               ).then(handles =>
               {
                 if (pageTitle == "$popup - Exception")
@@ -199,21 +247,21 @@ it("test pages", function()
             }
 
             let checkTestCase = () =>
-              getSections(this.driver).then(sections =>
-                this.driver.wait(() =>
-                  takeScreenshot(sections[i][1]).then(screenshot =>
-                    screenshot.width == expectedScreenshot.width &&
-                    screenshot.height == expectedScreenshot.height &&
-                    screenshot.data.compare(expectedScreenshot.data) == 0
-                  ), 1000, title
-                )
-              );
+                getSections(this.driver).then(sections =>
+                    this.driver.wait(() =>
+                        takeScreenshot(sections[i][1]).then(screenshot =>
+                            screenshot.width == expectedScreenshot.width &&
+                            screenshot.height == expectedScreenshot.height &&
+                            screenshot.data.compare(expectedScreenshot.data) == 0
+                        ), 1000, title
+                    )
+                );
 
             // Sometimes on Firefox there is a delay until the added
             // filters become effective. So if the test case fails once,
             // we reload the page and try once again.
             return checkTestCase().catch(() =>
-              this.driver.navigate().refresh().then(checkTestCase)
+                this.driver.navigate().refresh().then(checkTestCase)
             );
           });
         }
@@ -227,32 +275,32 @@ it("test pages", function()
 it("subscribe link", function()
 {
   return this.driver.navigate().to(TEST_PAGES_URL).then(() =>
-    this.driver.findElement(By.id("subscribe-button")).click()
+      this.driver.findElement(By.id("subscribe-button")).click()
   ).then(() =>
-    this.driver.wait(() =>
-      this.driver.getAllWindowHandles().then(handles =>
-        handles.length > 2 ? handles : null
-      ), 3000
-    )
+      this.driver.wait(() =>
+          this.driver.getAllWindowHandles().then(handles =>
+              handles.length > 2 ? handles : null
+          ), 3000
+      )
   ).then(handles =>
-    closeWindow(this.driver, handles[2], handles[1], () =>
-      this.driver.wait(until.ableToSwitchToFrame(0), 1000).then(() =>
-        this.driver.wait(
-          until.elementLocated(By.id("dialog-content-predefined")), 1000
-        )
-      ).then(dialog =>
-        this.driver.wait(() =>
-          Promise.all([
-            dialog.isDisplayed(),
-            dialog.findElement(By.css("h3")).getText()
-          ]).then(([displayed, title]) =>
-            displayed && title == "ABP Testcase Subscription"
-          ), 1000, "dialog shown"
-        ).then(() =>
-          dialog.findElement(By.css("button")).click()
-        )
-      ).then(() =>
-        this.driver.executeAsyncScript(`
+      closeWindow(this.driver, handles[2], handles[1], () =>
+          this.driver.wait(until.ableToSwitchToFrame(0), 1000).then(() =>
+              this.driver.wait(
+                  until.elementLocated(By.id("dialog-content-predefined")), 1000
+              )
+          ).then(dialog =>
+              this.driver.wait(() =>
+                  Promise.all([
+                    dialog.isDisplayed(),
+                    dialog.findElement(By.css("h3")).getText()
+                  ]).then(([displayed, title]) =>
+                      displayed && title == "ABP Testcase Subscription"
+                  ), 1000, "dialog shown"
+              ).then(() =>
+                  dialog.findElement(By.css("button")).click()
+              )
+          ).then(() =>
+              this.driver.executeAsyncScript(`
           let callback = arguments[arguments.length - 1];
           browser.runtime.sendMessage({type: "subscriptions.get",
                                        ignoreDisabled: true,
@@ -265,12 +313,12 @@ it("subscribe link", function()
             err => callback([null, err])
           );
         `)
-      ).then(([added, err]) =>
-      {
-        if (err)
-          throw err;
-        assert.ok(added, "subscription added");
-      })
-    )
+          ).then(([added, err]) =>
+          {
+            if (err)
+              throw err;
+            assert.ok(added, "subscription added");
+          })
+      )
   );
 });
